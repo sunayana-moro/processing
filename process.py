@@ -11,8 +11,10 @@ import mediapipe as mp
 import numpy as np
 
 # -------- SETTINGS --------
-DATASET_ROOT = "dataset"
-OUTPUT_ROOT = "processed_dataset"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+DATASET_ROOT = os.path.join(PROJECT_ROOT, "mp4")
+OUTPUT_ROOT = os.path.join(PROJECT_ROOT, "processed_dataset")
 FRAME_SKIP = 2
 OCCLUSION_THRESHOLD = 0.1
 MISSING_COPY_LOG = "missing_copies.log"
@@ -96,18 +98,22 @@ def is_occluded(video_path, frame_skip=2,
     if face_ratio > face_threshold:
         return True
 
-    if hand_ratio > hand_threshold:
-        return True
+    # if hand_ratio > hand_threshold:
+    #     return True
 
     return False
 
 
+def iter_video_files(video_root):
+    for current_root, _, files in os.walk(video_root):
+        for file in sorted(files):
+            if file.lower().endswith(".mp4"):
+                yield os.path.join(current_root, file)
+
+
 # -------- MAIN PROCESS --------
 def process_dataset():
-    video_root = os.path.join(DATASET_ROOT, "videos")
-    mask_root = os.path.join(DATASET_ROOT, "masks")
-    masked_root = os.path.join(DATASET_ROOT, "masked_videos")
-
+    video_root = DATASET_ROOT
     os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
     processed = 0
@@ -123,65 +129,41 @@ def process_dataset():
         missing_log.write("source_type\tsource_path\treason\n")
         deleted_log.write("Files deleted by the occlusion filter\n")
         deleted_log.write("video_path\treason\n")
+        deleted_log.flush()
 
-        for vid_id in os.listdir(video_root):
-            video_dir = os.path.join(video_root, vid_id)
-            mask_dir = os.path.join(mask_root, vid_id)
-            masked_dir = os.path.join(masked_root, vid_id)
+        for video_path in iter_video_files(video_root):
+            relative_parent = os.path.relpath(os.path.dirname(video_path), video_root)
+            file = os.path.basename(video_path)
 
-            if not os.path.isdir(video_dir):
-                continue
+            processed += 1
 
-            for file in os.listdir(video_dir):
-                video_path = os.path.join(video_dir, file)
+            # ---- OCCLUSION FILTER ----
+            if is_occluded(video_path,
+                           frame_skip=FRAME_SKIP,
+                           face_threshold=OCCLUSION_THRESHOLD,
+                           hand_threshold=OCCLUSION_THRESHOLD):
+                deleted += 1
+                deleted_log.write(f"{video_path}\tocclusion_detected\n")
+                deleted_log.flush()
+            else:
+                kept += 1
 
-                processed += 1
+                out_dir = os.path.join(OUTPUT_ROOT, relative_parent)
+                os.makedirs(out_dir, exist_ok=True)
 
-                # ---- OCCLUSION FILTER ----
-                if is_occluded(video_path):
-                    deleted += 1
-                    deleted_log.write(f"{video_path}\tocclusion_detected\n")
-                else:
-                    kept += 1
+                name, ext = os.path.splitext(file)
+                shutil.copy(video_path, os.path.join(out_dir, f"{name}{ext}"))
 
-                    out_dir = os.path.join(OUTPUT_ROOT, vid_id)
-                    os.makedirs(out_dir, exist_ok=True)
+            print(
+                f"\rProcessed: {processed} | Deleted: {deleted} | Kept: {kept} | Missing copies: {missing_copies}",
+                end=""
+            )
 
-                    name, ext = os.path.splitext(file)
-
-                    mask_path = os.path.join(mask_dir, file)
-                    masked_path = os.path.join(masked_dir, file)
-
-                    # Copy original
-                    shutil.copy(video_path,
-                                os.path.join(out_dir, f"{name}{ext}"))
-
-                    # Copy mask
-                    if os.path.exists(mask_path):
-                        shutil.copy(mask_path,
-                                    os.path.join(out_dir, f"{name}_mask{ext}"))
-                    else:
-                        missing_copies += 1
-                        missing_log.write(f"mask\t{mask_path}\tmissing source file\n")
-
-                    # Copy masked video
-                    if os.path.exists(masked_path):
-                        shutil.copy(masked_path,
-                                    os.path.join(out_dir, f"{name}_masked_video{ext}"))
-                    else:
-                        missing_copies += 1
-                        missing_log.write(f"masked_video\t{masked_path}\tmissing source file\n")
-
-                # ---- PROGRESS DISPLAY ----
-                print(
-                    f"\rProcessed: {processed} | Deleted: {deleted} | Kept: {kept} | Missing copies: {missing_copies}",
-                    end=""
-                )
-
-    print()  # newline after loop
-    print(f"Final → Processed: {processed}, Deleted: {deleted}, Kept: {kept}, Missing copies: {missing_copies}")
+    print()
+    print(f"Final -> Processed: {processed}, Deleted: {deleted}, Kept: {kept}, Missing copies: {missing_copies}")
     print(f"Missing copy log: {missing_log_path}")
     print(f"Deleted file log: {deleted_log_path}")
+    deleted_log.flush()
 
 
 if __name__ == "__main__":
